@@ -65,3 +65,23 @@ app.get("/deny", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port " + PORT));
+// Demo: tsindry fotsiny -> mandefa demande any Telegram
+app.get("/demo-request", async (req, res) => {
+  const profile = req.query.profile || "1h";
+
+  const mac = req.query.mac || "AA:BB:CC:DD:EE:FF";
+  const ip = req.query.ip || "11.11.11.50";
+
+  const token = makeToken();
+  REQS.set(token, { state: "PENDING", mac, ip, profile });
+
+  const approveUrl = `${req.protocol}://${req.get("host")}/approve?token=${token}`;
+  const denyUrl = `${req.protocol}://${req.get("host")}/deny?token=${token}`;
+
+  await bot.sendMessage(
+    ADMIN_CHAT_ID,
+    `🔔 DEMO Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
+  );
+
+  res.send(`DEMO sent. Token=${token}`);
+});

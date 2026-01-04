@@ -38,7 +38,6 @@ function saveReqs(obj) {
 }
 
 let REQS = loadReqs();
-
 const makeToken = () => crypto.randomBytes(16).toString("hex");
 
 app.get("/", (req, res) => res.send("Server OK ✅"));
@@ -48,32 +47,28 @@ app.get("/", (req, res) => res.send("Server OK ✅"));
  * Body: { mac, ip, profile, login, dst }
  */
 app.post("/request", async (req, res) => {
-  const { mac, ip, profile, login, dst } = req.body || {};
-  if (!mac || !profile)
-    return res.status(400).json({ error: "mac/profile required" });
+  try {
+    const { mac, ip, profile, login, dst } = req.body || {};
+    if (!mac || !profile) return res.status(400).json({ error: "mac/profile required" });
 
-  const token = makeToken();
-  REQS[token] = {
-    state: "PENDING",
-    mac,
-    ip,
-    profile,
-    login,
-    dst,
-    createdAt: Date.now(),
-  };
-  saveReqs(REQS);
+    const token = makeToken();
+    REQS[token] = { state: "PENDING", mac, ip, profile, login, dst, createdAt: Date.now() };
+    saveReqs(REQS);
 
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const approveUrl = `${baseUrl}/approve?token=${token}`;
-  const denyUrl = `${baseUrl}/deny?token=${token}`;
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const approveUrl = `${baseUrl}/approve?token=${token}`;
+    const denyUrl = `${baseUrl}/deny?token=${token}`;
 
-  await bot.sendMessage(
-    ADMIN_CHAT_ID,
-    `🔔 Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip || "-"}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
-  );
+    await bot.sendMessage(
+      ADMIN_CHAT_ID,
+      `🔔 Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip || "-"}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
+    );
 
-  res.json({ token });
+    res.json({ token, state: "PENDING" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "server error" });
+  }
 });
 
 app.get("/status", (req, res) => {
@@ -83,7 +78,7 @@ app.get("/status", (req, res) => {
   res.json(data);
 });
 
-app.get("/approve", async (req, res) => {
+app.get("/approve", (req, res) => {
   const token = req.query.token;
   const data = REQS[token];
   if (!data) return res.status(404).send("Token inconnu");
@@ -91,7 +86,7 @@ app.get("/approve", async (req, res) => {
   REQS[token] = { ...data, state: "APPROVED", approvedAt: Date.now() };
   saveReqs(REQS);
 
-  res.send("✅ Approved (OK). Dingana manaraka: MikroTik auto-login.");
+  res.send("✅ Approved (OK). Miandry MikroTik haka amin'ny /poll-text.");
 });
 
 app.get("/deny", (req, res) => {
@@ -106,62 +101,77 @@ app.get("/deny", (req, res) => {
 });
 
 /**
- * ✅ MikroTik -> maka liste APPROVED
+ * ✅ JSON polling (optional)
  * GET /poll
- * Response: [{ token, mac, ip, profile, login, dst, createdAt, approvedAt }]
+ * Response: [{ token, ...data }]
  */
 app.get("/poll", (req, res) => {
   const approved = [];
-
   for (const [token, data] of Object.entries(REQS)) {
-    if (data?.state === "APPROVED") {
-      approved.push({ token, ...data });
-    }
+    if (data?.state === "APPROVED") approved.push({ token, ...data });
   }
-
   res.json(approved);
 });
 
 /**
- * ✅ MikroTik -> rehefa vita nampidirina user dia "consume" ilay token
- * POST /consume
- * Body: { token }
- * Response: { ok: true }
+ * ✅ EASY polling for MikroTik
+ * GET /poll-text
+ * Response:
+ *   NONE
+ *   token|mac|profile|ip
  */
-app.post("/consume", (req, res) => {
-  const { token } = req.body || {};
-  if (!token) return res.status(400).json({ error: "token required" });
+app.get("/poll-text", (req, res) => {
+  for (const [token, data] of Object.entries(REQS)) {
+    if (data?.state === "APPROVED") {
+      const mac = data.mac || "";
+      const profile = data.profile || "";
+      const ip = data.ip || "";
+      return res.send(`${token}|${mac}|${profile}|${ip}`);
+    }
+  }
+  res.send("NONE");
+});
 
-  const data = REQS[token];
-  if (!data) return res.status(404).json({ error: "token not found" });
+/**
+ * ✅ EASY consume for MikroTik (GET)
+ * GET /consume?token=xxxx
+ * Response: OK
+ */
+app.get("/consume", (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(400).send("token required");
+  if (!REQS[token]) return res.status(404).send("not found");
 
-  // fafana ilay token mba tsy hiverina
   delete REQS[token];
   saveReqs(REQS);
-
-  res.json({ ok: true });
+  res.send("OK");
 });
 
 // Demo: tsindry fotsiny -> mandefa demande any Telegram
 app.get("/demo-request", async (req, res) => {
-  const profile = req.query.profile || "1h";
-  const mac = req.query.mac || "AA:BB:CC:DD:EE:FF";
-  const ip = req.query.ip || "11.11.11.50";
+  try {
+    const profile = req.query.profile || "1h";
+    const mac = req.query.mac || "AA:BB:CC:DD:EE:FF";
+    const ip = req.query.ip || "11.11.11.50";
 
-  const token = makeToken();
-  REQS[token] = { state: "PENDING", mac, ip, profile, createdAt: Date.now() };
-  saveReqs(REQS);
+    const token = makeToken();
+    REQS[token] = { state: "PENDING", mac, ip, profile, createdAt: Date.now() };
+    saveReqs(REQS);
 
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
-  const approveUrl = `${baseUrl}/approve?token=${token}`;
-  const denyUrl = `${baseUrl}/deny?token=${token}`;
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const approveUrl = `${baseUrl}/approve?token=${token}`;
+    const denyUrl = `${baseUrl}/deny?token=${token}`;
 
-  await bot.sendMessage(
-    ADMIN_CHAT_ID,
-    `🔔 DEMO Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
-  );
+    await bot.sendMessage(
+      ADMIN_CHAT_ID,
+      `🔔 DEMO Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
+    );
 
-  res.send(`DEMO sent ✅ Token=${token}`);
+    res.send(`DEMO sent ✅ Token=${token}`);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("demo error");
+  }
 });
 
 const PORT = process.env.PORT || 3000;

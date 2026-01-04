@@ -45,7 +45,7 @@ app.get("/status", (req, res) => {
   res.json(data);
 });
 
-app.get("/approve", async (req, res) => {
+app.get("/approve", (req, res) => {
   const token = req.query.token;
   const data = REQS.get(token);
   if (!data) return res.status(404).send("Token inconnu");
@@ -63,12 +63,9 @@ app.get("/deny", (req, res) => {
   res.send("❌ Refusé");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port " + PORT));
 // Demo: tsindry fotsiny -> mandefa demande any Telegram
 app.get("/demo-request", async (req, res) => {
   const profile = req.query.profile || "1h";
-
   const mac = req.query.mac || "AA:BB:CC:DD:EE:FF";
   const ip = req.query.ip || "11.11.11.50";
 
@@ -85,3 +82,6 @@ app.get("/demo-request", async (req, res) => {
 
   res.send(`DEMO sent. Token=${token}`);
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running on port " + PORT));

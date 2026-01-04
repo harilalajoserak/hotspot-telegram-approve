@@ -49,10 +49,19 @@ app.get("/", (req, res) => res.send("Server OK ✅"));
  */
 app.post("/request", async (req, res) => {
   const { mac, ip, profile, login, dst } = req.body || {};
-  if (!mac || !profile) return res.status(400).json({ error: "mac/profile required" });
+  if (!mac || !profile)
+    return res.status(400).json({ error: "mac/profile required" });
 
   const token = makeToken();
-  REQS[token] = { state: "PENDING", mac, ip, profile, login, dst, createdAt: Date.now() };
+  REQS[token] = {
+    state: "PENDING",
+    mac,
+    ip,
+    profile,
+    login,
+    dst,
+    createdAt: Date.now(),
+  };
   saveReqs(REQS);
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
@@ -79,7 +88,7 @@ app.get("/approve", async (req, res) => {
   const data = REQS[token];
   if (!data) return res.status(404).send("Token inconnu");
 
-  REQS[token] = { ...data, state: "APPROVED" };
+  REQS[token] = { ...data, state: "APPROVED", approvedAt: Date.now() };
   saveReqs(REQS);
 
   res.send("✅ Approved (OK). Dingana manaraka: MikroTik auto-login.");
@@ -90,10 +99,47 @@ app.get("/deny", (req, res) => {
   const data = REQS[token];
   if (!data) return res.status(404).send("Token inconnu");
 
-  REQS[token] = { ...data, state: "DENIED" };
+  REQS[token] = { ...data, state: "DENIED", deniedAt: Date.now() };
   saveReqs(REQS);
 
   res.send("❌ Refusé");
+});
+
+/**
+ * ✅ MikroTik -> maka liste APPROVED
+ * GET /poll
+ * Response: [{ token, mac, ip, profile, login, dst, createdAt, approvedAt }]
+ */
+app.get("/poll", (req, res) => {
+  const approved = [];
+
+  for (const [token, data] of Object.entries(REQS)) {
+    if (data?.state === "APPROVED") {
+      approved.push({ token, ...data });
+    }
+  }
+
+  res.json(approved);
+});
+
+/**
+ * ✅ MikroTik -> rehefa vita nampidirina user dia "consume" ilay token
+ * POST /consume
+ * Body: { token }
+ * Response: { ok: true }
+ */
+app.post("/consume", (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ error: "token required" });
+
+  const data = REQS[token];
+  if (!data) return res.status(404).json({ error: "token not found" });
+
+  // fafana ilay token mba tsy hiverina
+  delete REQS[token];
+  saveReqs(REQS);
+
+  res.json({ ok: true });
 });
 
 // Demo: tsindry fotsiny -> mandefa demande any Telegram

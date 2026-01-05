@@ -1,3 +1,4 @@
+
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import crypto from "crypto";
@@ -8,10 +9,11 @@ app.use(express.json());
 
 // ================== ENV ==================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; // ex: "123456789"
+const PUBLIC_URL = process.env.PUBLIC_URL;       // ex: "https://xxxxx.onrender.com"
 
-if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
-  console.error("❌ BOT_TOKEN / ADMIN_CHAT_ID missing in env");
+if (!BOT_TOKEN || !ADMIN_CHAT_ID || !PUBLIC_URL) {
+  console.error("❌ BOT_TOKEN / ADMIN_CHAT_ID / PUBLIC_URL missing in env");
   process.exit(1);
 }
 
@@ -41,29 +43,148 @@ function saveReqs(obj) {
 let REQS = loadReqs();
 const makeToken = () => crypto.randomBytes(16).toString("hex");
 
+// ================== Helpers ==================
+// Profile voafetra: 1h sy 3h ihany
+function normalizeProfile(p) {
+  return p === "3h" ? "3h" : p === "1h" ? "1h" : null;
+}
+
 // ================== Routes ==================
 app.get("/", (req, res) => res.send("Server OK ✅"));
 
 /**
+ * ✅ Setup webhook (miantso azy indray mandeha rehefa deploy)
+ * GET /setup-webhook
+ */
+app.get("/setup-webhook", async (req, res) => {
+  try {
+    const webhookUrl = `${PUBLIC_URL}/tg/webhook`;
+    await bot.setWebHook(webhookUrl);
+    res.send(`✅ Webhook set: ${webhookUrl}`);
+  } catch (e) {
+    console.error("setup-webhook error:", e);
+    res.status(500).send("❌ setWebHook error");
+  }
+});
+
+/**
+ * Telegram webhook endpoint
+ * Telegram no mandefa update rehefa tsindriana bokotra
+ */
+app.post("/tg/webhook", async (req, res) => {
+  try {
+    const update = req.body;
+
+    // tokony hamaly 200 haingana
+    res.sendStatus(200);
+
+    if (!update || !update.callback_query) return;
+
+    const cq = update.callback_query;
+    const data = cq.data || ""; // ex: "APPROVE|<token>|1h"
+    const chatId = cq.message?.chat?.id;
+
+    // Security: ataovy azo antoka fa admin chat ihany no mahazo manova
+    if (String(chatId) !== String(ADMIN_CHAT_ID)) {
+      await bot.answerCallbackQuery(cq.id, { text: "❌ Tsy admin ianao", show_alert: true });
+      return;
+    }
+
+    const parts = data.split("|");
+    const action = parts[0];        // APPROVE or DENY
+    const token = parts[1];
+    const profile = parts[2];       // 1h/3h (raha approve)
+
+    const reqData = REQS[token];
+    if (!reqData) {
+      await bot.answerCallbackQuery(cq.id, { text: "❌ Token inconnu", show_alert: true });
+      return;
+    }
+
+    if (action === "APPROVE") {
+      const p = normalizeProfile(profile);
+      if (!p) {
+        await bot.answerCallbackQuery(cq.id, { text: "❌ Profil tsy ekena", show_alert: true });
+        return;
+      }
+
+      REQS[token] = {
+        ...reqData,
+        state: "APPROVED",
+        profile: p,          // ✅ eto no apetraka ny 1h/3h
+        approvedAt: Date.now(),
+      };
+      saveReqs(REQS);
+
+      await bot.answerCallbackQuery(cq.id, { text: `✅ Approved (${p})` });
+
+      // Ovay ny message mba hitan'ny admin fa vita
+      await bot.editMessageText(
+        `✅ APPROVED (${p})\nMAC: ${reqData.mac}\nIP: ${reqData.ip || "-"}\nToken: ${token}`,
+        { chat_id: chatId, message_id: cq.message.message_id }
+      );
+      return;
+    }
+
+    if (action === "DENY") {
+      REQS[token] = { ...reqData, state: "DENIED", deniedAt: Date.now() };
+      saveReqs(REQS);
+
+      await bot.answerCallbackQuery(cq.id, { text: "❌ Refusé" });
+      await bot.editMessageText(
+        `❌ DENIED\nMAC: ${reqData.mac}\nIP: ${reqData.ip || "-"}\nToken: ${token}`,
+        { chat_id: chatId, message_id: cq.message.message_id }
+      );
+      return;
+    }
+
+    await bot.answerCallbackQuery(cq.id, { text: "❌ Action inconnue", show_alert: true });
+  } catch (e) {
+    console.error("tg/webhook error:", e);
+    // aza mamaly eto satria efa res.sendStatus(200) etsy ambony
+  }
+});
+
+/**
  * Client -> mangataka acces
- * Body: { mac, ip, profile, login, dst }
+ * Body: { mac, ip, login, dst }
+ * ✅ profile tsy avy amin'ny client intsony eto (fa admin no misafidy 1h/3h)
  */
 app.post("/request", async (req, res) => {
   try {
-    const { mac, ip, profile, login, dst } = req.body || {};
-    if (!mac || !profile) return res.status(400).json({ error: "mac/profile required" });
+    const { mac, ip, login, dst } = req.body || {};
+    if (!mac) return res.status(400).json({ error: "mac required" });
 
     const token = makeToken();
-    REQS[token] = { state: "PENDING", mac, ip, profile, login, dst, createdAt: Date.now() };
+    REQS[token] = {
+      state: "PENDING",
+      mac,
+      ip,
+      login,
+      dst,
+      // profile mbola tsy voafidy raha tsy approve
+      createdAt: Date.now(),
+    };
     saveReqs(REQS);
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const approveUrl = `${baseUrl}/approve?token=${token}`;
-    const denyUrl = `${baseUrl}/deny?token=${token}`;
+    // bokotra inline Telegram
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "✅ Approve 1h", callback_data: `APPROVE|${token}|1h` },
+          { text: "✅ Approve 3h", callback_data: `APPROVE|${token}|3h` },
+        ],
+        [{ text: "❌ Deny", callback_data: `DENY|${token}` }],
+      ],
+    };
+
+    const approveUrl = `${PUBLIC_URL}/approve?token=${token}&profile=1h`; // backup
+    const denyUrl = `${PUBLIC_URL}/deny?token=${token}`;                 // backup
 
     await bot.sendMessage(
       ADMIN_CHAT_ID,
-      `🔔 Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip || "-"}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
+      `🔔 Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip || "-"}\nLogin: ${login || "-"}\nDST: ${dst || "-"}\n\n(Backup lien)\n✅ OK(1h): ${approveUrl}\n❌ Refuse: ${denyUrl}`,
+      { reply_markup: keyboard }
     );
 
     res.json({ token });
@@ -80,15 +201,19 @@ app.get("/status", (req, res) => {
   res.json(data);
 });
 
+// ✅ Backup approve via URL (fa profile 1h/3h ihany no ekena)
 app.get("/approve", (req, res) => {
   const token = req.query.token;
+  const profile = normalizeProfile(req.query.profile);
+
+  if (!profile) return res.status(400).send("Profil tsy ekena (1h na 3h ihany)");
   const data = REQS[token];
   if (!data) return res.status(404).send("Token inconnu");
 
-  REQS[token] = { ...data, state: "APPROVED", approvedAt: Date.now() };
+  REQS[token] = { ...data, state: "APPROVED", profile, approvedAt: Date.now() };
   saveReqs(REQS);
 
-  res.send("✅ Approved (OK). MikroTik no handray automatique.");
+  res.send(`✅ Approved (${profile}). MikroTik no handray automatique.`);
 });
 
 app.get("/deny", (req, res) => {
@@ -107,7 +232,7 @@ app.get("/deny", (req, res) => {
  * GET /approved?limit=5
  *
  * - Maka ireo "APPROVED"
- * - Avy eo manova azy ho "SENT" (mba tsy hiverina indray mandeha)
+ * - Avy eo manova azy ho "SENT" (mba tsy hiverina)
  * - Mamerina JSON array: [{ token, mac, ip, profile, login, dst, ... }]
  */
 app.get("/approved", (req, res) => {
@@ -120,14 +245,12 @@ app.get("/approved", (req, res) => {
       ...REQS[token],
     }));
 
-    // Mark as SENT to avoid duplicates
     for (const token of approvedTokens.slice(0, limit)) {
       REQS[token] = { ...REQS[token], state: "SENT", sentAt: Date.now() };
     }
     saveReqs(REQS);
 
-    res.setHeader("Content-Type", "application/json");
-    res.send(JSON.stringify(toSend));
+    res.json(toSend);
   } catch (e) {
     console.error("approved error:", e);
     res.status(500).json({ error: "server error" });
@@ -137,21 +260,27 @@ app.get("/approved", (req, res) => {
 // Demo: tsindry fotsiny -> mandefa demande any Telegram
 app.get("/demo-request", async (req, res) => {
   try {
-    const profile = req.query.profile || "1h";
     const mac = req.query.mac || "AA:BB:CC:DD:EE:FF";
     const ip = req.query.ip || "11.11.11.50";
 
     const token = makeToken();
-    REQS[token] = { state: "PENDING", mac, ip, profile, createdAt: Date.now() };
+    REQS[token] = { state: "PENDING", mac, ip, createdAt: Date.now() };
     saveReqs(REQS);
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const approveUrl = `${baseUrl}/approve?token=${token}`;
-    const denyUrl = `${baseUrl}/deny?token=${token}`;
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "✅ Approve 1h", callback_data: `APPROVE|${token}|1h` },
+          { text: "✅ Approve 3h", callback_data: `APPROVE|${token}|3h` },
+        ],
+        [{ text: "❌ Deny", callback_data: `DENY|${token}` }],
+      ],
+    };
 
     await bot.sendMessage(
       ADMIN_CHAT_ID,
-      `🔔 DEMO Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip}\nProfil: ${profile}\n\n✅ OK: ${approveUrl}\n❌ Refuse: ${denyUrl}`
+      `🔔 DEMO Demande accès Hotspot\nMAC: ${mac}\nIP: ${ip}\nToken: ${token}`,
+      { reply_markup: keyboard }
     );
 
     res.send(`DEMO sent ✅ Token=${token}`);
